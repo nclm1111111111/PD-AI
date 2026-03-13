@@ -6,4 +6,3 @@ __pycache__/
 .env
 uploads/
 pd_fastapi_starter.egg-info/
-logs/
