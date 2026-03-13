@@ -61,22 +61,3 @@ def get_current_user(authorization: Optional[str] = Header(None)) -> Dict[str, A
                 "account": user.get("account"),
                 "role": user.get("role"),
             }
-
-
-def get_user_identity_from_authorization(authorization: Optional[str]) -> str:
-    if not authorization or not authorization.startswith("Bearer "):
-        return "-"
-
-    token = authorization.split(" ", 1)[1].strip()
-    try:
-        payload = _decode_token(token)
-    except HTTPException:
-        return "-"
-
-    user_id = payload.get("uid") or payload.get("sub")
-    role = payload.get("role")
-    if user_id and role:
-        return f"uid={user_id} role={role}"
-    if user_id:
-        return f"uid={user_id}"
-    return "-"

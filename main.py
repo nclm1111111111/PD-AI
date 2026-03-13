@@ -1,26 +1,31 @@
-from dotenv import load_dotenv
 import os
-
 import time
-from fastapi import FastAPI, Request, Depends
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.security import HTTPBearer
 from contextlib import asynccontextmanager
 from pathlib import Path
 import sys
 import uvicorn
+from dotenv import load_dotenv
 
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 # 确保能导入 database_setup
 sys.path.append(str(Path(__file__).parent))
 from database_setup import create_tables
+from app.api.v1.api import api_router
 from app.core.config import settings
 from app.api.v1.user.routes import register_pd_auth_routes
-from app.api.v1.routes.image_detection import router as image_detection_router
-from app.core.logging import get_logger, reset_log_user, set_log_user, setup_logging
-from core.auth import get_user_identity_from_authorization
+from app.core.logging import get_logger, setup_logging
+from app.services.contract_service import expire_contracts_after_grace
+# from fastapi.middleware.cors import CORSMiddleware
+#
+#
+# from api.user.routes import register_routes as register_user_routes
+#
 
-load_dotenv()
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理 - 启动时初始化数据库"""
@@ -33,12 +38,19 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"数据库初始化失败: {e}")
         logger.exception("database init failed")
+    scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
+    scheduler.add_job(
+        func=expire_contracts_after_grace,
+        trigger=CronTrigger(hour=0, minute=10),
+        kwargs={"grace_days": 5},
+        id="expire_contracts",
+        replace_existing=True,
+    )
+    scheduler.start()
+    logger.info("contract expire scheduler started")
     yield
+    scheduler.shutdown(wait=False)
     print("应用关闭")
-
-
-# ========== 只添加这行 ==========
-security = HTTPBearer(auto_error=False)
 
 
 app = FastAPI(
@@ -55,9 +67,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# ========== 注册路由 ==========
-app.include_router(image_detection_router, prefix="/api/v1", dependencies=[Depends(security)])
+# app = FastAPI(
+#     title="综合管理系统API",
+#     description="财务管理系统 + 用户中心 + 订单系统 + 商品管理",
+#     version="1.0.0",
+#     docs_url="/docs",  # 自定义 docs 路由以支持搜索过滤
+#     redoc_url="/redoc",  # ReDoc 文档地址
+#     openapi_url="/openapi.json",  # OpenAPI Schema 地址
+#     default_response_class=DecimalJSONResponse
+# )
+app.include_router(api_router, prefix="/api/v1")
 register_pd_auth_routes(app)
 logger = get_logger("app")
 
@@ -65,15 +84,11 @@ logger = get_logger("app")
 @app.middleware("http")
 async def request_logger(request: Request, call_next):
     start_time = time.perf_counter()
-    identity = get_user_identity_from_authorization(request.headers.get("Authorization"))
-    token = set_log_user(identity)
     try:
         response = await call_next(request)
     except Exception:
         logger.exception("request failed method=%s path=%s", request.method, request.url.path)
         return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
-    finally:
-        reset_log_user(token)
 
     duration_ms = (time.perf_counter() - start_time) * 1000
     logger.info(
@@ -95,6 +110,8 @@ async def request_logger(request: Request, call_next):
 
     return response
 
+
+# register_user_routes(app)
 
 @app.get("/healthz")
 def health_check() -> dict:
